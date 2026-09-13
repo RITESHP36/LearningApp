@@ -10,7 +10,7 @@
     <title>The Way Things Work</title>
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
     <!-- Loading screen -->
@@ -93,7 +93,7 @@
     <!-- Overlay for panels -->
     <div id="overlay" class="overlay hidden"></div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('sw.js').catch(() => {});

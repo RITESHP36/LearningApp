@@ -16,6 +16,17 @@
 (function () {
   "use strict";
 
+  // ── Version — bump this to force-clear stale caches ──
+  const APP_VERSION = 2;
+  const storedVersion = parseInt(localStorage.getItem("la-version") || "0", 10);
+  if (storedVersion < APP_VERSION) {
+    // Clear stale reel order so old pages 1-11 don't appear
+    localStorage.removeItem("la-reel-order");
+    localStorage.removeItem("la-reel-index");
+    localStorage.removeItem("la-current-page");
+    localStorage.setItem("la-version", String(APP_VERSION));
+  }
+
   // ── Config ──
   const CONTENT_START_PAGE = 12; // Actual content starts here (skip cover/TOC)
   const REELS_BUFFER = 10;       // How many reel cards to keep loaded at once
