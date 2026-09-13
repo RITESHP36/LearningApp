@@ -23,30 +23,39 @@
     </div>
 
     <!-- Top bar -->
-    <header id="topbar" class="topbar">
+    <header id="topbar" class="topbar hidden">
         <div class="topbar-left">
-            <button id="btn-toc" class="icon-btn" aria-label="Table of contents">☰</button>
+            <button id="btn-toc" class="icon-btn" aria-label="Bookmarks">☰</button>
         </div>
         <div class="topbar-center">
-            <span id="page-indicator">1 / 402</span>
+            <span id="page-indicator">Page 1</span>
         </div>
         <div class="topbar-right">
-            <button id="btn-bookmark" class="icon-btn" aria-label="Bookmark">🔖</button>
+            <button id="btn-mode" class="icon-btn" aria-label="Switch mode" title="Switch mode">📖</button>
+            <button id="btn-bookmark" class="icon-btn" aria-label="Bookmark">📑</button>
             <button id="btn-settings" class="icon-btn" aria-label="Settings">⚙️</button>
         </div>
     </header>
 
-    <!-- Main reader area -->
-    <main id="reader" class="reader">
-        <!-- Pages injected by JS -->
+    <!-- Main reader area — reels mode (default) -->
+    <main id="reader-reels" class="reader-reels">
+        <!-- Reel cards injected by JS -->
     </main>
 
-    <!-- Bottom progress bar -->
-    <div id="progress-bar" class="progress-bar">
+    <!-- Main reader area — book mode -->
+    <main id="reader-book" class="reader-book hidden">
+        <!-- Sequential page cards injected by JS -->
+    </main>
+
+    <!-- Page number pill (shows briefly on scroll in reels mode) -->
+    <div id="page-pill" class="page-pill hidden">Page 42</div>
+
+    <!-- Bottom progress bar (book mode only) -->
+    <div id="progress-bar" class="progress-bar hidden">
         <div id="progress-fill" class="progress-fill"></div>
     </div>
 
-    <!-- Page slider (tap bottom to show) -->
+    <!-- Page slider (book mode, tap center to show) -->
     <div id="page-slider-container" class="page-slider-container hidden">
         <input type="range" id="page-slider" class="page-slider" min="1" max="402" value="1">
         <span id="slider-label" class="slider-label">Page 1</span>
@@ -59,7 +68,7 @@
             <button class="icon-btn" id="close-bookmarks">✕</button>
         </div>
         <div id="bookmarks-list" class="panel-list">
-            <p class="empty-msg">No bookmarks yet. Tap 🔖 to add one.</p>
+            <p class="empty-msg">No bookmarks yet. Tap 📑 to add one.</p>
         </div>
     </div>
 
@@ -76,14 +85,6 @@
                     <option value="dark">Dark</option>
                     <option value="light">Light</option>
                     <option value="sepia">Sepia</option>
-                </select>
-            </label>
-            <label class="setting-row">
-                <span>Preload pages</span>
-                <select id="preload-select">
-                    <option value="2">2 ahead</option>
-                    <option value="4" selected>4 ahead</option>
-                    <option value="8">8 ahead</option>
                 </select>
             </label>
         </div>
