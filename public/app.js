@@ -6,7 +6,8 @@
  * 2. BOOK — horizontal swipe, sequential order, classic reader
  *
  * Features:
- * - Pinch-to-zoom on every page (custom touch handler)
+ * - Pinch-to-zoom with scroll-lock (prevents page change during zoom)
+ * - Zoom +/- buttons and prev/next navigation
  * - Lazy loading with preload buffer
  * - Bookmarks (localStorage)
  * - Reading position memory
@@ -17,10 +18,9 @@
   "use strict";
 
   // ── Version — bump this to force-clear stale caches ──
-  const APP_VERSION = 2;
+  const APP_VERSION = 3;
   const storedVersion = parseInt(localStorage.getItem("la-version") || "0", 10);
   if (storedVersion < APP_VERSION) {
-    // Clear stale reel order so old pages 1-11 don't appear
     localStorage.removeItem("la-reel-order");
     localStorage.removeItem("la-reel-index");
     localStorage.removeItem("la-current-page");
@@ -28,27 +28,28 @@
   }
 
   // ── Config ──
-  const CONTENT_START_PAGE = 12; // Actual content starts here (skip cover/TOC)
-  const REELS_BUFFER = 10;       // How many reel cards to keep loaded at once
-  const REELS_LOAD_AHEAD = 3;    // Load N cards ahead of current
-  const BOOK_PRELOAD = 4;        // Preload N pages ahead in book mode
+  const CONTENT_START_PAGE = 12;
+  const REELS_BUFFER = 10;
+  const REELS_LOAD_AHEAD = 3;
+  const BOOK_PRELOAD = 4;
 
   // ── State ──
   let totalPages = 0;
-  let mode = "reels";            // "reels" or "book"
+  let mode = "reels";
   let bookmarks = new Set();
   let barsVisible = false;
 
   // Reels state
-  let reelOrder = [];            // Shuffled page numbers
-  let reelIndex = 0;             // Current position in reelOrder
-  let reelCards = [];             // Currently rendered card metadata
+  let reelOrder = [];
+  let reelIndex = 0;
+  let reelCards = [];
 
   // Book state
   let bookPage = 1;
 
-  // Zoom state (per-card)
-  let activeZoom = null;         // { wrapper, img, scale, tx, ty, ... }
+  // Global zoom lock — prevents scroll-snap from firing during pinch
+  let zoomLocked = false;
+  let zoomLockTimeout = null;
 
   // ── DOM refs ──
   const readerReels = document.getElementById("reader-reels");
@@ -65,6 +66,10 @@
   const btnBookmark = document.getElementById("btn-bookmark");
   const btnSettings = document.getElementById("btn-settings");
   const btnToc = document.getElementById("btn-toc");
+  const btnZoomIn = document.getElementById("btn-zoom-in");
+  const btnZoomOut = document.getElementById("btn-zoom-out");
+  const btnPrev = document.getElementById("btn-prev");
+  const btnNext = document.getElementById("btn-next");
 
   const bookmarksPanel = document.getElementById("bookmarks-panel");
   const bookmarksList = document.getElementById("bookmarks-list");
@@ -79,6 +84,29 @@
   const sliderLabel = document.getElementById("slider-label");
 
   const overlay = document.getElementById("overlay");
+
+  // ═══════════════════════════
+  // SCROLL LOCK (prevents page change during zoom)
+  // ═══════════════════════════
+  function lockScroll() {
+    if (zoomLocked) return;
+    zoomLocked = true;
+    clearTimeout(zoomLockTimeout);
+    const reader = mode === "reels" ? readerReels : readerBook;
+    reader.style.overflow = "hidden";
+    reader.style.scrollSnapType = "none";
+  }
+
+  function unlockScroll() {
+    // Delay unlock slightly so the snap doesn't fire from residual momentum
+    clearTimeout(zoomLockTimeout);
+    zoomLockTimeout = setTimeout(() => {
+      zoomLocked = false;
+      const reader = mode === "reels" ? readerReels : readerBook;
+      reader.style.overflow = "";
+      reader.style.scrollSnapType = "";
+    }, 300);
+  }
 
   // ═══════════════════════════
   // INIT
@@ -105,15 +133,11 @@
 
     pageSlider.max = totalPages;
 
-    // Restore mode
     const savedMode = localStorage.getItem("la-mode") || "reels";
     mode = savedMode;
 
-    if (mode === "reels") {
-      initReels();
-    } else {
-      initBook();
-    }
+    if (mode === "reels") initReels();
+    else initBook();
 
     updateModeUI();
     hideLoader();
@@ -144,20 +168,17 @@
     return `pages/page-${String(num).padStart(3, "0")}.webp`;
   }
 
-  function createPageImage(pageNum, card) {
+  function createPageImage(pageNum) {
     const wrapper = document.createElement("div");
     wrapper.className = "zoom-wrapper";
+    wrapper.dataset.pageNum = pageNum;
 
     const img = new Image();
     img.className = "loading";
     img.alt = `Page ${pageNum}`;
     img.decoding = "async";
     img.src = pageUrl(pageNum);
-
-    img.onload = () => {
-      img.classList.remove("loading");
-      img.classList.add("loaded");
-    };
+    img.onload = () => { img.classList.remove("loading"); img.classList.add("loaded"); };
 
     wrapper.appendChild(img);
     setupPinchZoom(wrapper, img);
@@ -165,7 +186,7 @@
   }
 
   // ═══════════════════════════
-  // PINCH-TO-ZOOM
+  // PINCH-TO-ZOOM (fixed for mobile scroll)
   // ═══════════════════════════
   function setupPinchZoom(wrapper, img) {
     let scale = 1, lastScale = 1;
@@ -173,131 +194,134 @@
     let startDist = 0, startMidX = 0, startMidY = 0;
     let isPinching = false;
 
-    function getDistance(t1, t2) {
-      const dx = t1.clientX - t2.clientX;
-      const dy = t1.clientY - t2.clientY;
-      return Math.sqrt(dx * dx + dy * dy);
+    function dist(t1, t2) {
+      return Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+    }
+    function mid(t1, t2) {
+      return { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
     }
 
-    function getMidpoint(t1, t2) {
-      return {
-        x: (t1.clientX + t2.clientX) / 2,
-        y: (t1.clientY + t2.clientY) / 2
-      };
-    }
-
-    function clampTranslation() {
+    function clamp() {
       if (scale <= 1) { tx = 0; ty = 0; return; }
-      const rect = wrapper.getBoundingClientRect();
-      const imgW = img.naturalWidth * (rect.width / img.naturalWidth) * scale;
-      const imgH = img.naturalHeight * (rect.height / img.naturalHeight) * scale;
-      const maxTx = Math.max(0, (imgW - rect.width) / 2);
-      const maxTy = Math.max(0, (imgH - rect.height) / 2);
+      const r = wrapper.getBoundingClientRect();
+      const maxTx = Math.max(0, (r.width * scale - r.width) / 2);
+      const maxTy = Math.max(0, (r.height * scale - r.height) / 2);
       tx = Math.max(-maxTx, Math.min(maxTx, tx));
       ty = Math.max(-maxTy, Math.min(maxTy, ty));
     }
 
-    function applyTransform() {
+    function apply() {
       img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
       img.style.transformOrigin = "center center";
     }
 
-    function resetZoom() {
+    function reset() {
       scale = 1; lastScale = 1;
       tx = 0; ty = 0; lastTx = 0; lastTy = 0;
       img.style.transform = "";
-      // Re-enable scroll snap on the parent
-      wrapper.closest(".reel-card, .book-card")?.style.removeProperty("scroll-snap-align");
+      unlockScroll();
     }
 
+    // ── Programmatic zoom (for buttons) ──
+    wrapper._zoomTo = function(newScale) {
+      lockScroll();
+      scale = Math.max(1, Math.min(5, newScale));
+      if (scale <= 1) { reset(); return; }
+      clamp();
+      apply();
+    };
+    wrapper._getScale = () => scale;
+    wrapper._resetZoom = reset;
+
+    // ── Touch handlers ──
     wrapper.addEventListener("touchstart", (e) => {
       if (e.touches.length === 2) {
-        isPinching = true;
-        startDist = getDistance(e.touches[0], e.touches[1]);
-        const mid = getMidpoint(e.touches[0], e.touches[1]);
-        startMidX = mid.x;
-        startMidY = mid.y;
-        lastScale = scale;
-        lastTx = tx;
-        lastTy = ty;
         e.preventDefault();
+        e.stopPropagation();
+        isPinching = true;
+        lockScroll(); // ← KEY: lock the whole scroll container immediately
+        startDist = dist(e.touches[0], e.touches[1]);
+        const m = mid(e.touches[0], e.touches[1]);
+        startMidX = m.x; startMidY = m.y;
+        lastScale = scale; lastTx = tx; lastTy = ty;
       }
-    }, { passive: false });
+    }, { passive: false, capture: true });
 
     wrapper.addEventListener("touchmove", (e) => {
       if (isPinching && e.touches.length === 2) {
         e.preventDefault();
-        const dist = getDistance(e.touches[0], e.touches[1]);
-        const mid = getMidpoint(e.touches[0], e.touches[1]);
-
-        scale = Math.max(1, Math.min(5, lastScale * (dist / startDist)));
-
-        // Pan follows the midpoint
-        tx = lastTx + (mid.x - startMidX);
-        ty = lastTy + (mid.y - startMidY);
-
-        clampTranslation();
-        applyTransform();
-
-        // Disable scroll snap while zoomed to allow panning
-        if (scale > 1) {
-          const card = wrapper.closest(".reel-card, .book-card");
-          if (card) card.style.scrollSnapAlign = "none";
-        }
+        e.stopPropagation();
+        const d = dist(e.touches[0], e.touches[1]);
+        const m = mid(e.touches[0], e.touches[1]);
+        scale = Math.max(1, Math.min(5, lastScale * (d / startDist)));
+        tx = lastTx + (m.x - startMidX);
+        ty = lastTy + (m.y - startMidY);
+        clamp();
+        apply();
       } else if (e.touches.length === 1 && scale > 1) {
-        // Single finger pan while zoomed
+        // Single-finger pan while zoomed
         e.preventDefault();
-        const touch = e.touches[0];
-        if (!wrapper._lastTouch) {
-          wrapper._lastTouch = { x: touch.clientX, y: touch.clientY };
-          return;
+        e.stopPropagation();
+        const t = e.touches[0];
+        if (wrapper._lt) {
+          tx += t.clientX - wrapper._lt.x;
+          ty += t.clientY - wrapper._lt.y;
+          clamp();
+          apply();
         }
-        tx += touch.clientX - wrapper._lastTouch.x;
-        ty += touch.clientY - wrapper._lastTouch.y;
-        wrapper._lastTouch = { x: touch.clientX, y: touch.clientY };
-        clampTranslation();
-        applyTransform();
+        wrapper._lt = { x: t.clientX, y: t.clientY };
       }
-    }, { passive: false });
+    }, { passive: false, capture: true });
 
     wrapper.addEventListener("touchend", (e) => {
-      isPinching = false;
-      wrapper._lastTouch = null;
-      if (scale <= 1.05) {
-        resetZoom();
+      if (isPinching) {
+        isPinching = false;
+        wrapper._lt = null;
+        if (scale <= 1.05) reset();
+        else unlockScroll(); // Stay zoomed but re-enable scroll after delay
+        return;
+      }
+      wrapper._lt = null;
+      if (scale <= 1.05 && !isPinching) {
+        // Might be end of a single-finger pan — check if zoom is basically 1x
+        if (scale <= 1.05) reset();
       }
     });
 
-    // Double-tap to zoom in/out
+    // Double-tap to zoom
     let lastTap = 0;
-    wrapper.addEventListener("touchend", (e) => {
-      if (e.touches.length > 0) return;
+    wrapper.addEventListener("click", (e) => {
       const now = Date.now();
-      if (now - lastTap < 300) {
+      if (now - lastTap < 350) {
         e.preventDefault();
         if (scale > 1) {
-          resetZoom();
+          reset();
         } else {
+          lockScroll();
           scale = 2.5;
-          // Zoom toward the tap point
-          const rect = wrapper.getBoundingClientRect();
-          const tapX = e.changedTouches[0].clientX - rect.left;
-          const tapY = e.changedTouches[0].clientY - rect.top;
-          tx = (rect.width / 2 - tapX) * (scale - 1);
-          ty = (rect.height / 2 - tapY) * (scale - 1);
-          clampTranslation();
-          applyTransform();
-          const card = wrapper.closest(".reel-card, .book-card");
-          if (card) card.style.scrollSnapAlign = "none";
+          const r = wrapper.getBoundingClientRect();
+          tx = (r.width / 2 - (e.clientX - r.left)) * (scale - 1);
+          ty = (r.height / 2 - (e.clientY - r.top)) * (scale - 1);
+          clamp();
+          apply();
+          // Keep locked until user resets
         }
         lastTap = 0;
       } else {
         lastTap = now;
       }
     });
+  }
 
-    // Expose reset for mode switching
-    wrapper._resetZoom = resetZoom;
+  // Get the zoom wrapper for the currently visible card
+  function getActiveZoomWrapper() {
+    const reader = mode === "reels" ? readerReels : readerBook;
+    const cards = reader.querySelectorAll(".reel-card, .book-card");
+    const scrollPos = mode === "reels" ? reader.scrollTop : reader.scrollLeft;
+    const size = mode === "reels" ? window.innerHeight : window.innerWidth;
+    const idx = Math.round(scrollPos / size);
+    if (cards[idx]) return cards[idx].querySelector(".zoom-wrapper");
+    return null;
   }
 
   // ═══════════════════════════
@@ -312,42 +336,33 @@
   }
 
   function initReels() {
-    // Create shuffled order of content pages only (skip cover/TOC)
     const contentPages = totalPages - CONTENT_START_PAGE + 1;
     reelOrder = shuffleArray(
       Array.from({ length: contentPages }, (_, i) => i + CONTENT_START_PAGE)
     );
 
-    // Restore position if available
     const savedIdx = parseInt(localStorage.getItem("la-reel-index") || "0", 10);
     const savedOrder = localStorage.getItem("la-reel-order");
     if (savedOrder) {
       try {
         const parsed = JSON.parse(savedOrder);
-        // Validate: all entries should be >= CONTENT_START_PAGE
         if (parsed.length > 0 && parsed[0] >= CONTENT_START_PAGE) {
           reelOrder = parsed;
           reelIndex = Math.min(savedIdx, reelOrder.length - 1);
         }
-      } catch { /* use fresh shuffle */ }
+      } catch { /* fresh shuffle */ }
     }
 
     readerReels.innerHTML = "";
     reelCards = [];
 
-    // Build initial cards
     const start = Math.max(0, reelIndex - 1);
     const end = Math.min(reelOrder.length, reelIndex + REELS_BUFFER);
-    for (let i = start; i < end; i++) {
-      appendReelCard(i);
-    }
+    for (let i = start; i < end; i++) appendReelCard(i);
 
-    // Scroll to current
     requestAnimationFrame(() => {
-      const targetCard = readerReels.querySelector(`[data-reel-idx="${reelIndex}"]`);
-      if (targetCard) {
-        readerReels.scrollTo({ top: targetCard.offsetTop, behavior: "instant" });
-      }
+      const t = readerReels.querySelector(`[data-reel-idx="${reelIndex}"]`);
+      if (t) readerReels.scrollTo({ top: t.offsetTop, behavior: "instant" });
     });
 
     setupReelsEvents();
@@ -356,7 +371,6 @@
 
   function appendReelCard(orderIdx) {
     if (orderIdx < 0 || orderIdx >= reelOrder.length) return;
-    // Don't duplicate
     if (readerReels.querySelector(`[data-reel-idx="${orderIdx}"]`)) return;
 
     const pageNum = reelOrder[orderIdx];
@@ -365,10 +379,8 @@
     card.dataset.reelIdx = orderIdx;
     card.dataset.page = pageNum;
 
-    const wrapper = createPageImage(pageNum, card);
-    card.appendChild(wrapper);
+    card.appendChild(createPageImage(pageNum));
 
-    // Page label
     const label = document.createElement("div");
     label.className = "reel-page-label";
     label.textContent = `p. ${pageNum}`;
@@ -379,38 +391,26 @@
   }
 
   function loadMoreReels() {
-    // Add cards ahead of current position
     const lastIdx = reelCards.length > 0
-      ? Math.max(...reelCards.map(c => c.orderIdx))
-      : reelIndex;
-
-    for (let i = lastIdx + 1; i <= lastIdx + REELS_LOAD_AHEAD && i < reelOrder.length; i++) {
+      ? Math.max(...reelCards.map(c => c.orderIdx)) : reelIndex;
+    for (let i = lastIdx + 1; i <= lastIdx + REELS_LOAD_AHEAD && i < reelOrder.length; i++)
       appendReelCard(i);
-    }
-
-    // If we're running low on pages, reshuffle and append more
     if (lastIdx + REELS_LOAD_AHEAD >= reelOrder.length) {
       const contentPages = totalPages - CONTENT_START_PAGE + 1;
-      const moreShuffle = shuffleArray(
+      reelOrder.push(...shuffleArray(
         Array.from({ length: contentPages }, (_, i) => i + CONTENT_START_PAGE)
-      );
-      reelOrder.push(...moreShuffle);
+      ));
     }
   }
 
   function setupReelsEvents() {
-    let scrollTimeout;
-    let pillTimeout;
-
+    let scrollTimeout, pillTimeout;
     readerReels.addEventListener("scroll", () => {
+      if (zoomLocked) return; // Don't change pages while zoomed
       clearTimeout(scrollTimeout);
       scrollTimeout = setTimeout(() => {
-        const scrollTop = readerReels.scrollTop;
-        const cardHeight = window.innerHeight;
-        const newIdx = Math.round(scrollTop / cardHeight);
-
-        // Find the card at this scroll position
         const cards = readerReels.querySelectorAll(".reel-card");
+        const newIdx = Math.round(readerReels.scrollTop / window.innerHeight);
         if (cards[newIdx]) {
           const idx = parseInt(cards[newIdx].dataset.reelIdx, 10);
           if (idx !== reelIndex) {
@@ -422,46 +422,45 @@
         }
       }, 60);
 
-      // Show page pill briefly
-      const scrollTop = readerReels.scrollTop;
-      const cardHeight = window.innerHeight;
-      const visibleIdx = Math.round(scrollTop / cardHeight);
+      // Page pill
+      const visIdx = Math.round(readerReels.scrollTop / window.innerHeight);
       const cards = readerReels.querySelectorAll(".reel-card");
-      if (cards[visibleIdx]) {
-        const pg = cards[visibleIdx].dataset.page;
-        pagePill.textContent = `Page ${pg}`;
+      if (cards[visIdx]) {
+        pagePill.textContent = `Page ${cards[visIdx].dataset.page}`;
         pagePill.classList.remove("hidden");
         clearTimeout(pillTimeout);
         pillTimeout = setTimeout(() => pagePill.classList.add("hidden"), 800);
       }
     }, { passive: true });
 
-    // Tap center to toggle bars
     readerReels.addEventListener("click", (e) => {
-      if (e.target.closest(".icon-btn")) return;
+      if (e.target.closest(".icon-btn, .nav-btn, .zoom-btn")) return;
       const x = e.clientX / window.innerWidth;
       const y = e.clientY / window.innerHeight;
-      if (x > 0.25 && x < 0.75 && y > 0.25 && y < 0.75) {
-        toggleBars();
-      }
+      if (x > 0.25 && x < 0.75 && y > 0.25 && y < 0.75) toggleBars();
     });
   }
 
   function updateReelsUI() {
-    const pageNum = reelOrder[reelIndex] || 1;
-    pageIndicator.textContent = `Page ${pageNum}`;
-    btnBookmark.textContent = bookmarks.has(pageNum) ? "🔖" : "📑";
+    const pg = reelOrder[reelIndex] || 1;
+    pageIndicator.textContent = `Page ${pg}`;
+    btnBookmark.textContent = bookmarks.has(pg) ? "🔖" : "📑";
   }
 
   function saveReelsState() {
     localStorage.setItem("la-reel-index", String(reelIndex));
-    // Only save first 1000 entries of the order to avoid quota issues
     localStorage.setItem("la-reel-order", JSON.stringify(reelOrder.slice(0, 1000)));
   }
 
   function getCurrentPageNum() {
-    if (mode === "reels") return reelOrder[reelIndex] || 1;
-    return bookPage;
+    return mode === "reels" ? (reelOrder[reelIndex] || 1) : bookPage;
+  }
+
+  function goNextReel() {
+    readerReels.scrollBy({ top: window.innerHeight, behavior: "smooth" });
+  }
+  function goPrevReel() {
+    readerReels.scrollBy({ top: -window.innerHeight, behavior: "smooth" });
   }
 
   // ═══════════════════════════
@@ -469,24 +468,19 @@
   // ═══════════════════════════
   function initBook() {
     readerBook.innerHTML = "";
-
     for (let i = 1; i <= totalPages; i++) {
       const card = document.createElement("div");
       card.className = "book-card";
       card.dataset.page = i;
-
-      const placeholder = document.createElement("div");
-      placeholder.className = "reel-placeholder";
-      placeholder.textContent = `Page ${i}`;
-      card.appendChild(placeholder);
-
+      const ph = document.createElement("div");
+      ph.className = "reel-placeholder";
+      ph.textContent = `Page ${i}`;
+      card.appendChild(ph);
       readerBook.appendChild(card);
     }
 
-    // Restore position
     const saved = parseInt(localStorage.getItem("la-book-page") || "1", 10);
     bookPage = Math.max(1, Math.min(totalPages, saved));
-
     loadBookPages();
 
     requestAnimationFrame(() => {
@@ -499,33 +493,27 @@
   }
 
   function loadBookPages() {
-    const start = Math.max(1, bookPage - 1);
-    const end = Math.min(totalPages, bookPage + BOOK_PRELOAD);
-    for (let i = start; i <= end; i++) {
-      loadBookPage(i);
-    }
+    const s = Math.max(1, bookPage - 1), e = Math.min(totalPages, bookPage + BOOK_PRELOAD);
+    for (let i = s; i <= e; i++) loadBookPage(i);
   }
 
   function loadBookPage(num) {
     const card = readerBook.children[num - 1];
     if (!card || card.dataset.loaded) return;
-
-    const wrapper = createPageImage(num, card);
     card.innerHTML = "";
-    card.appendChild(wrapper);
+    card.appendChild(createPageImage(num));
     card.dataset.loaded = "true";
   }
 
   function setupBookEvents() {
     let scrollTimeout;
     readerBook.addEventListener("scroll", () => {
+      if (zoomLocked) return;
       clearTimeout(scrollTimeout);
       scrollTimeout = setTimeout(() => {
-        const scrollLeft = readerBook.scrollLeft;
-        const pageWidth = window.innerWidth;
-        const newPage = Math.round(scrollLeft / pageWidth) + 1;
-        if (newPage !== bookPage && newPage >= 1 && newPage <= totalPages) {
-          bookPage = newPage;
+        const p = Math.round(readerBook.scrollLeft / window.innerWidth) + 1;
+        if (p !== bookPage && p >= 1 && p <= totalPages) {
+          bookPage = p;
           updateBookUI();
           loadBookPages();
           localStorage.setItem("la-book-page", String(bookPage));
@@ -533,9 +521,8 @@
       }, 80);
     }, { passive: true });
 
-    // Tap center to toggle bars + slider
     readerBook.addEventListener("click", (e) => {
-      if (e.target.closest(".icon-btn")) return;
+      if (e.target.closest(".icon-btn, .nav-btn, .zoom-btn")) return;
       const x = e.clientX / window.innerWidth;
       const y = e.clientY / window.innerHeight;
       if (x > 0.25 && x < 0.75 && y > 0.25 && y < 0.75) {
@@ -567,31 +554,22 @@
   // MODE SWITCHING
   // ═══════════════════════════
   function switchMode() {
-    // Reset any active zoom
-    document.querySelectorAll(".zoom-wrapper").forEach(w => {
-      if (w._resetZoom) w._resetZoom();
-    });
-
+    document.querySelectorAll(".zoom-wrapper").forEach(w => w._resetZoom?.());
     if (mode === "reels") {
       mode = "book";
       readerReels.classList.add("hidden");
       readerBook.classList.remove("hidden");
       progressBar.classList.remove("hidden");
       pagePill.classList.add("hidden");
-
-      if (readerBook.children.length === 0) initBook();
-      else updateBookUI();
+      if (readerBook.children.length === 0) initBook(); else updateBookUI();
     } else {
       mode = "reels";
       readerBook.classList.add("hidden");
       readerReels.classList.remove("hidden");
       progressBar.classList.add("hidden");
       pageSliderContainer.classList.add("hidden");
-
-      if (reelCards.length === 0) initReels();
-      else updateReelsUI();
+      if (reelCards.length === 0) initReels(); else updateReelsUI();
     }
-
     localStorage.setItem("la-mode", mode);
     updateModeUI();
   }
@@ -619,6 +597,7 @@
   function toggleBars() {
     barsVisible = !barsVisible;
     topbar.classList.toggle("hidden", !barsVisible);
+    document.getElementById("nav-controls").classList.toggle("hidden", !barsVisible);
   }
 
   // ═══════════════════════════
@@ -626,39 +605,26 @@
   // ═══════════════════════════
   function toggleBookmark() {
     const pg = getCurrentPageNum();
-    if (bookmarks.has(pg)) bookmarks.delete(pg);
-    else bookmarks.add(pg);
+    if (bookmarks.has(pg)) bookmarks.delete(pg); else bookmarks.add(pg);
     saveBookmarks();
-    if (mode === "reels") updateReelsUI();
-    else updateBookUI();
+    if (mode === "reels") updateReelsUI(); else updateBookUI();
   }
 
   function renderBookmarks() {
     if (bookmarks.size === 0) {
-      bookmarksList.innerHTML =
-        '<p class="empty-msg">No bookmarks yet. Tap 📑 to add one.</p>';
+      bookmarksList.innerHTML = '<p class="empty-msg">No bookmarks yet. Tap 📑 to add one.</p>';
       return;
     }
-    const sorted = [...bookmarks].sort((a, b) => a - b);
-    bookmarksList.innerHTML = sorted
-      .map(p => `
-        <div class="bookmark-item" data-page="${p}">
-          <span class="page-num">Page ${p}</span>
-          <button class="delete-btn" data-del="${p}">✕</button>
-        </div>`)
-      .join("");
+    bookmarksList.innerHTML = [...bookmarks].sort((a, b) => a - b)
+      .map(p => `<div class="bookmark-item" data-page="${p}">
+        <span class="page-num">Page ${p}</span>
+        <button class="delete-btn" data-del="${p}">✕</button></div>`).join("");
   }
 
   function loadBookmarks() {
-    try {
-      const raw = localStorage.getItem("la-bookmarks");
-      if (raw) bookmarks = new Set(JSON.parse(raw));
-    } catch { /* ignore */ }
+    try { const r = localStorage.getItem("la-bookmarks"); if (r) bookmarks = new Set(JSON.parse(r)); } catch {}
   }
-
-  function saveBookmarks() {
-    localStorage.setItem("la-bookmarks", JSON.stringify([...bookmarks]));
-  }
+  function saveBookmarks() { localStorage.setItem("la-bookmarks", JSON.stringify([...bookmarks])); }
 
   // ═══════════════════════════
   // SETTINGS
@@ -669,14 +635,7 @@
     themeSelect.value = theme;
   }
 
-  // ═══════════════════════════
-  // PANELS
-  // ═══════════════════════════
-  function openPanel(panel) {
-    panel.classList.remove("hidden");
-    overlay.classList.remove("hidden");
-  }
-
+  function openPanel(p) { p.classList.remove("hidden"); overlay.classList.remove("hidden"); }
   function closePanels() {
     bookmarksPanel.classList.add("hidden");
     settingsPanel.classList.add("hidden");
@@ -687,74 +646,59 @@
   // GLOBAL EVENTS
   // ═══════════════════════════
   function setupGlobalEvents() {
-    // Mode toggle
     btnMode.addEventListener("click", switchMode);
-
-    // Bookmark
     btnBookmark.addEventListener("click", toggleBookmark);
-
-    // Settings
     btnSettings.addEventListener("click", () => openPanel(settingsPanel));
     closeSettings.addEventListener("click", closePanels);
-
     themeSelect.addEventListener("change", () => {
       document.body.className = `theme-${themeSelect.value}`;
       localStorage.setItem("la-theme", themeSelect.value);
     });
 
-    // Bookmarks panel
-    btnToc.addEventListener("click", () => {
-      renderBookmarks();
-      openPanel(bookmarksPanel);
-    });
+    btnToc.addEventListener("click", () => { renderBookmarks(); openPanel(bookmarksPanel); });
     closeBookmarks.addEventListener("click", closePanels);
     bookmarksList.addEventListener("click", (e) => {
       const del = e.target.closest("[data-del]");
-      if (del) {
-        bookmarks.delete(parseInt(del.dataset.del, 10));
-        saveBookmarks();
-        renderBookmarks();
-        if (mode === "reels") updateReelsUI();
-        else updateBookUI();
-        return;
-      }
+      if (del) { bookmarks.delete(parseInt(del.dataset.del, 10)); saveBookmarks(); renderBookmarks(); if (mode === "reels") updateReelsUI(); else updateBookUI(); return; }
       const item = e.target.closest("[data-page]");
-      if (item) {
-        closePanels();
-        const pg = parseInt(item.dataset.page, 10);
-        if (mode === "book") {
-          goToBookPage(pg);
-        }
-        // In reels mode, bookmarks are for reference — can't jump to a random position easily
-      }
+      if (item) { closePanels(); if (mode === "book") goToBookPage(parseInt(item.dataset.page, 10)); }
     });
 
-    // Overlay
     overlay.addEventListener("click", closePanels);
 
-    // Page slider (book mode)
-    pageSlider.addEventListener("input", () => {
-      sliderLabel.textContent = `Page ${pageSlider.value}`;
+    pageSlider.addEventListener("input", () => { sliderLabel.textContent = `Page ${pageSlider.value}`; });
+    pageSlider.addEventListener("change", () => goToBookPage(parseInt(pageSlider.value, 10)));
+
+    // Zoom buttons
+    btnZoomIn.addEventListener("click", () => {
+      const w = getActiveZoomWrapper();
+      if (w) w._zoomTo((w._getScale?.() || 1) + 0.5);
     });
-    pageSlider.addEventListener("change", () => {
-      goToBookPage(parseInt(pageSlider.value, 10));
+    btnZoomOut.addEventListener("click", () => {
+      const w = getActiveZoomWrapper();
+      if (w) w._zoomTo((w._getScale?.() || 1) - 0.5);
     });
 
-    // Keyboard (desktop testing)
+    // Nav buttons
+    btnPrev.addEventListener("click", () => {
+      if (mode === "reels") goPrevReel(); else goToBookPage(bookPage - 1);
+    });
+    btnNext.addEventListener("click", () => {
+      if (mode === "reels") goNextReel(); else goToBookPage(bookPage + 1);
+    });
+
+    // Keyboard (desktop)
     document.addEventListener("keydown", (e) => {
       if (mode === "book") {
         if (e.key === "ArrowRight") goToBookPage(bookPage + 1);
         if (e.key === "ArrowLeft") goToBookPage(bookPage - 1);
       }
-      if (e.key === "ArrowDown" && mode === "reels") {
-        readerReels.scrollBy({ top: window.innerHeight, behavior: "smooth" });
-      }
-      if (e.key === "ArrowUp" && mode === "reels") {
-        readerReels.scrollBy({ top: -window.innerHeight, behavior: "smooth" });
-      }
+      if (e.key === "ArrowDown") { if (mode === "reels") goNextReel(); }
+      if (e.key === "ArrowUp") { if (mode === "reels") goPrevReel(); }
+      if (e.key === "+" || e.key === "=") btnZoomIn.click();
+      if (e.key === "-") btnZoomOut.click();
     });
   }
 
-  // ── Boot ──
   init();
 })();
