@@ -1,4 +1,5 @@
 node_modules/
 *.pdf
 .DS_Store
-pages/
+# Don't commit source PDFs
+# Page images in public/pages/ ARE committed (needed for GitHub Pages)

@@ -2,47 +2,101 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>LearningApp — Test</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            background: #0a0a0a;
-            color: #e0e0e0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100dvh;
-            padding: 2rem;
-        }
-        .card {
-            background: #1a1a2e;
-            border-radius: 1rem;
-            padding: 2rem;
-            max-width: 360px;
-            text-align: center;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-        }
-        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
-        p { color: #888; font-size: 0.95rem; line-height: 1.5; }
-        .check { font-size: 3rem; margin-bottom: 1rem; }
-        .swipe-hint {
-            margin-top: 1.5rem;
-            padding: 0.75rem 1.5rem;
-            background: #16213e;
-            border-radius: 0.5rem;
-            font-size: 0.85rem;
-            color: #aaa;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="LearnApp">
+    <title>The Way Things Work</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="card">
-        <div class="check">✅</div>
-        <h1>GitHub Pages Works!</h1>
-        <p>If you can see this on your phone, the deployment pipeline is confirmed.</p>
-        <div class="swipe-hint">👈 Swipe gestures coming soon 👉</div>
+    <!-- Loading screen -->
+    <div id="loader" class="loader">
+        <div class="loader-content">
+            <div class="loader-icon">📖</div>
+            <div class="loader-text">Loading book...</div>
+            <div class="loader-bar"><div class="loader-fill"></div></div>
+        </div>
     </div>
+
+    <!-- Top bar -->
+    <header id="topbar" class="topbar">
+        <div class="topbar-left">
+            <button id="btn-toc" class="icon-btn" aria-label="Table of contents">☰</button>
+        </div>
+        <div class="topbar-center">
+            <span id="page-indicator">1 / 402</span>
+        </div>
+        <div class="topbar-right">
+            <button id="btn-bookmark" class="icon-btn" aria-label="Bookmark">🔖</button>
+            <button id="btn-settings" class="icon-btn" aria-label="Settings">⚙️</button>
+        </div>
+    </header>
+
+    <!-- Main reader area -->
+    <main id="reader" class="reader">
+        <!-- Pages injected by JS -->
+    </main>
+
+    <!-- Bottom progress bar -->
+    <div id="progress-bar" class="progress-bar">
+        <div id="progress-fill" class="progress-fill"></div>
+    </div>
+
+    <!-- Page slider (tap bottom to show) -->
+    <div id="page-slider-container" class="page-slider-container hidden">
+        <input type="range" id="page-slider" class="page-slider" min="1" max="402" value="1">
+        <span id="slider-label" class="slider-label">Page 1</span>
+    </div>
+
+    <!-- Bookmarks panel -->
+    <div id="bookmarks-panel" class="side-panel hidden">
+        <div class="panel-header">
+            <h2>Bookmarks</h2>
+            <button class="icon-btn" id="close-bookmarks">✕</button>
+        </div>
+        <div id="bookmarks-list" class="panel-list">
+            <p class="empty-msg">No bookmarks yet. Tap 🔖 to add one.</p>
+        </div>
+    </div>
+
+    <!-- Settings panel -->
+    <div id="settings-panel" class="side-panel hidden">
+        <div class="panel-header">
+            <h2>Settings</h2>
+            <button class="icon-btn" id="close-settings">✕</button>
+        </div>
+        <div class="panel-body">
+            <label class="setting-row">
+                <span>Background</span>
+                <select id="theme-select">
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                    <option value="sepia">Sepia</option>
+                </select>
+            </label>
+            <label class="setting-row">
+                <span>Preload pages</span>
+                <select id="preload-select">
+                    <option value="2">2 ahead</option>
+                    <option value="4" selected>4 ahead</option>
+                    <option value="8">8 ahead</option>
+                </select>
+            </label>
+        </div>
+    </div>
+
+    <!-- Overlay for panels -->
+    <div id="overlay" class="overlay hidden"></div>
+
+    <script src="app.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(() => {});
+        }
+    </script>
 </body>
 </html>
