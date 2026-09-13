@@ -17,6 +17,7 @@
   "use strict";
 
   // ── Config ──
+  const CONTENT_START_PAGE = 12; // Actual content starts here (skip cover/TOC)
   const REELS_BUFFER = 10;       // How many reel cards to keep loaded at once
   const REELS_LOAD_AHEAD = 3;    // Load N cards ahead of current
   const BOOK_PRELOAD = 4;        // Preload N pages ahead in book mode
@@ -300,9 +301,10 @@
   }
 
   function initReels() {
-    // Create shuffled order of all pages
+    // Create shuffled order of content pages only (skip cover/TOC)
+    const contentPages = totalPages - CONTENT_START_PAGE + 1;
     reelOrder = shuffleArray(
-      Array.from({ length: totalPages }, (_, i) => i + 1)
+      Array.from({ length: contentPages }, (_, i) => i + CONTENT_START_PAGE)
     );
 
     // Restore position if available
@@ -311,7 +313,8 @@
     if (savedOrder) {
       try {
         const parsed = JSON.parse(savedOrder);
-        if (parsed.length === totalPages) {
+        // Validate: all entries should be >= CONTENT_START_PAGE
+        if (parsed.length > 0 && parsed[0] >= CONTENT_START_PAGE) {
           reelOrder = parsed;
           reelIndex = Math.min(savedIdx, reelOrder.length - 1);
         }
@@ -376,8 +379,9 @@
 
     // If we're running low on pages, reshuffle and append more
     if (lastIdx + REELS_LOAD_AHEAD >= reelOrder.length) {
+      const contentPages = totalPages - CONTENT_START_PAGE + 1;
       const moreShuffle = shuffleArray(
-        Array.from({ length: totalPages }, (_, i) => i + 1)
+        Array.from({ length: contentPages }, (_, i) => i + CONTENT_START_PAGE)
       );
       reelOrder.push(...moreShuffle);
     }
